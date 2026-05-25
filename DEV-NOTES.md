@@ -323,3 +323,46 @@ user(image_url from screenshot)   ← 移到最后
 
 注意：此函数处理所有 user 消息（不仅限 image_url），因为纯文本 user 消息
 在 tool 结果之间也会破坏 SAP 邻接性。
+
+---
+
+## §54 v2 → v3 迁移审计：Anthropic 端点的修复是否回移？
+
+### 背景
+v3 从 v2 创建时，直接删除了 `anthropic_api.py`（~840行）和相关端点，
+没有系统审查 Anthropic 端点中做过的修复是否需要在 OpenAI 管道层补回。
+
+### 审计结果
+
+**核心文件对比**（v2 vs v3）:
+| 文件 | 差异 |
+|---|---|
+| `curl_login.py` | 完全相同 |
+| `config.py` | 完全相同 |
+| `openai_api.py` | v3 多了 §53 修复（_reorder_tool_result_images） |
+| `main.py` | v3 删除了 `/v1/messages`、`/research/*` 端点及 import |
+
+**v2 Anthropic 端点修复与 v3 对应**:
+
+| v2 修复 | 位置 | v3 状态 |
+|---|---|---|
+| §43 tool_result 里 image block 提取为 user(image) | `anthropic_api.py:304-348` | **v3 不需要** — OpenAI 格式的 tool result 不含 image block；Shelley 直接送 user(image) |
+| §44 tool_result image 放在 tool message 之后（非之前） | `anthropic_api.py:342-348` 注释 | **§53 已修** — 但 v2 的实现其实有同样缺陷：user(image) 放在自己 tool result 之后，但在并行 tool_result 之前。§53 在管道层修复了所有 user 消息 |
+| §44 hybrid mode：image 走 template，tool 对话走 history | `openai_api.py`（共享） | **v3 已有** — `_build_image_template_messages` + `_build_messages_history_with_images` |
+| §46 image_url 放在 messages_history（非 template） | `openai_api.py`（共享） | **v3 已有** — 同一代码 |
+| §47 空响应 anti-empty-response hint | `openai_api.py`（共享） | **v3 已有** — 同一代码 |
+| Anthropic `is_error` 标记 | `anthropic_api.py:329-332` | **v3 不需要** — OpenAI 格式无此字段 |
+| Anthropic `_estimate_input_tokens` | `anthropic_api.py:488-537` | **v3 不需要** — 仅 Anthropic SSE event `message_start` 需要 |
+| Anthropic streaming SSE 格式 | `anthropic_api.py:539-837` | **v3 不需要** — 已移除 Anthropic 端点 |
+
+### 结论
+
+v3 的代码与 v2 核心管道（openai_api.py, curl_login.py, config.py）完全同步。
+v2 独有的修复都在 Anthropic 格式翻译层，不影响 OpenAI 管道。
+
+唯一遗漏是 §44 的教训："SAP 要求 tool_use → tool_result 必须紧邻，中间不能插 user message"。
+这个认知写在 anthropic_api.py 的注释里（line 343），但没有回移到 openai_api.py 的管道层。
+§53 重新发现并修复了同一问题，这次是在正确的地方（管道层而非格式翻译层）。
+
+**教训**: 删除功能模块时，应审查被删模块中的 bug 修复注释和认知，
+将通用性修复回移到共享管道中，避免同一 bug 以不同形式复发。
