@@ -334,7 +334,7 @@ def test_history_truncation_counts_tool_calls_arguments() -> None:
     """History truncation must subtract tool_calls arguments length when dropping entries.
     Bug: previously only subtracted content length, not arguments length.
     This caused total_chars to stay artificially high after truncation."""
-    from app.openai_api import _build_messages_history, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
+    from app.openai_api import _build_messages_history, _build_template_messages, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
     from app import openai_api
 
     # Save and override settings to force truncation
@@ -430,7 +430,7 @@ def test_history_truncation_turn_limit() -> None:
 
 def test_history_with_tool_calls_keeps_intact_pairs() -> None:
     """Assistant tool_calls and corresponding tool results should stay together."""
-    from app.openai_api import _build_messages_history, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
+    from app.openai_api import _build_messages_history, _build_template_messages, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
     from app import openai_api
 
     orig_tokens = openai_api.settings.max_history_tokens
@@ -880,7 +880,7 @@ def test_history_truncation_does_not_drop_subsequent_messages() -> None:
     dropped ALL messages after the one that triggered the budget — including the
     assistant with tool_use whose tool_result was in the template, causing
     SAP 400 "unexpected tool_use_id" errors."""
-    from app.openai_api import _build_messages_history, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
+    from app.openai_api import _build_messages_history, _build_template_messages, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
     from app import openai_api
 
     orig_tokens = openai_api.settings.max_history_tokens
@@ -907,15 +907,21 @@ def test_history_truncation_does_not_drop_subsequent_messages() -> None:
         ]
 
         history = _build_messages_history(messages)
-        # The assistant with tool_use (call_important) MUST be present.
-        # With the old break-after-truncation bug, it would be dropped.
+        template = _build_template_messages(messages, tools=None)
+        # The assistant with tool_use (call_important) MUST be present
+        # in either history or template (turn boundary logic decides where).
+        # With the old break-after-truncation bug, it would be dropped entirely.
         tool_ids = set()
         for entry in history:
             for tc in entry.get('tool_calls', []):
                 tool_ids.add(tc.get('id', ''))
+        for entry in template:
+            for tc in entry.get('tool_calls', []):
+                tool_ids.add(tc.get('id', ''))
         assert 'call_important' in tool_ids, (
-            f"assistant with tool_use 'call_important' was dropped from history! "
-            f"History entries: {len(history)}, tool_ids found: {tool_ids}"
+            f"assistant with tool_use 'call_important' was dropped! "
+            f"History entries: {len(history)}, template entries: {len(template)}, "
+            f"tool_ids found: {tool_ids}"
         )
     finally:
         openai_api.settings.max_history_tokens = orig_tokens
@@ -928,7 +934,7 @@ def test_history_truncation_with_image_does_not_drop_subsequent_messages() -> No
     This was the exact bug that caused the directory-files-listing session to fail
     after screenshot: image (230KB) pushed budget over limit → break dropped the
     assistant with tool_use → SAP rejected orphaned tool_result in template."""
-    from app.openai_api import _build_messages_history_with_images, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
+    from app.openai_api import _build_messages_history_with_images, _build_template_messages, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
     from app import openai_api
 
     orig_tokens = openai_api.settings.max_history_tokens
@@ -958,14 +964,20 @@ def test_history_truncation_with_image_does_not_drop_subsequent_messages() -> No
         ]
 
         history = _build_messages_history_with_images(messages)
-        # The assistant with tool_use (call_after_image) MUST be present.
+        template = _build_template_messages(messages, tools=None)
+        # The assistant with tool_use (call_after_image) MUST be present
+        # in either history or template (turn boundary logic decides where).
         tool_ids = set()
         for entry in history:
             for tc in entry.get('tool_calls', []):
                 tool_ids.add(tc.get('id', ''))
+        for entry in template:
+            for tc in entry.get('tool_calls', []):
+                tool_ids.add(tc.get('id', ''))
         assert 'call_after_image' in tool_ids, (
-            f"assistant with tool_use 'call_after_image' was dropped from history! "
-            f"History entries: {len(history)}, tool_ids found: {tool_ids}"
+            f"assistant with tool_use 'call_after_image' was dropped! "
+            f"History entries: {len(history)}, template entries: {len(template)}, "
+            f"tool_ids found: {tool_ids}"
         )
     finally:
         openai_api.settings.max_history_tokens = orig_tokens

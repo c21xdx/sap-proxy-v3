@@ -344,13 +344,20 @@ def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
     turn_start = last_user_idx
     while turn_start > 0:
         prev = messages[turn_start - 1]
-        if prev.role == "assistant" and prev.tool_calls:
+        if prev.role == "tool":
+            # Parallel tool result — belongs to same turn
             turn_start -= 1
-            if turn_start > 0 and messages[turn_start - 1].role in ("user", "tool"):
-                turn_start -= 1
-                continue
-            break
+            continue
+        elif prev.role == "assistant" and prev.tool_calls:
+            # assistant(tool_calls) — its tool results are in this turn
+            turn_start -= 1
+            continue
+        elif prev.role == "user":
+            # User message that started this turn
+            turn_start -= 1
+            continue
         else:
+            # Boundary: system or assistant without tool_calls
             break
 
     if turn_start <= 0:
@@ -431,6 +438,7 @@ def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
     # any subsequent tool result referencing that tool_use_id becomes orphaned.
     # SAP's upstream LLM rejects orphaned tool_results with 400.
     history = _repair_tool_adjacency(history)
+    _ensure_tool_results_complete(history)
 
     return history
 
@@ -512,13 +520,20 @@ def _build_messages_history_with_images(messages: list[OpenAIMessage]) -> list[d
     turn_start = last_user_idx
     while turn_start > 0:
         prev = messages[turn_start - 1]
-        if prev.role == "assistant" and prev.tool_calls:
+        if prev.role == "tool":
+            # Parallel tool result — belongs to same turn
             turn_start -= 1
-            if turn_start > 0 and messages[turn_start - 1].role in ("user", "tool"):
-                turn_start -= 1
-                continue
-            break
+            continue
+        elif prev.role == "assistant" and prev.tool_calls:
+            # assistant(tool_calls) — its tool results are in this turn
+            turn_start -= 1
+            continue
+        elif prev.role == "user":
+            # User message that started this turn
+            turn_start -= 1
+            continue
         else:
+            # Boundary: system or assistant without tool_calls
             break
 
     if turn_start <= 0:
@@ -626,6 +641,7 @@ def _build_messages_history_with_images(messages: list[OpenAIMessage]) -> list[d
     # any subsequent tool result referencing that tool_use_id becomes orphaned.
     # SAP's upstream LLM rejects orphaned tool_results with 400.
     history = _repair_tool_adjacency(history)
+    _ensure_tool_results_complete(history)
 
     return history
 
@@ -654,16 +670,20 @@ def _build_template_messages(messages: list[OpenAIMessage], tools: list[OpenAITo
     turn_start = last_user_idx
     while turn_start > 0:
         prev = messages[turn_start - 1]
-        if prev.role == "assistant" and prev.tool_calls:
-            # assistant(tool_calls) belongs to this turn — its tool result
-            # is in the current turn, so the assistant must be in template too
+        if prev.role == "tool":
+            # Parallel tool result — belongs to same turn
             turn_start -= 1
-            # The user/tool that triggered this assistant also belongs
-            if turn_start > 0 and messages[turn_start - 1].role in ("user", "tool"):
-                turn_start -= 1
-                continue
-            break
+            continue
+        elif prev.role == "assistant" and prev.tool_calls:
+            # assistant(tool_calls) — its tool results are in this turn
+            turn_start -= 1
+            continue
+        elif prev.role == "user":
+            # User message that started this turn
+            turn_start -= 1
+            continue
         else:
+            # Boundary: system or assistant without tool_calls
             break
 
     # If there's a system message, put it in template
@@ -726,10 +746,67 @@ def _build_template_messages(messages: list[OpenAIMessage], tools: list[OpenAITo
     # receiving tool results, especially after tool errors (boxd02/boxd03).
     # We use user role (not assistant) so the model treats this as a
     # genuine continuation request rather than continuing its own prior text.
+    # Defensive: ensure every assistant(tool_calls) in the template has matching
+    # tool results. Some clients (e.g. Shelley agent) send partial tool results
+    # when a parallel tool_call hasn't completed yet. SAP rejects these with 400
+    # "tool_call_ids did not have response messages". Synthesize missing results.
+    _ensure_tool_results_complete(current)
+
     if tools and current and current[-1].get("role") == "tool":
         current.append({"role": "user", "content": "Please continue with the next step based on the tool results above."})
 
     return current
+
+
+def _ensure_tool_results_complete(template: list[dict]) -> None:
+    """Add synthetic tool results for any orphaned tool_call_ids.
+
+    SAP requires every tool_call in an assistant message to have a matching
+    tool result. If a client sends partial results (e.g. only 2 of 3 parallel
+    tool calls have results), SAP rejects the request. This function detects
+    such orphans and adds placeholder results so the request goes through.
+    """
+    # Collect all tool_call_ids declared by assistant messages
+    declared_ids: set[str] = set()
+    for entry in template:
+        for tc in entry.get("tool_calls", []):
+            tc_id = tc.get("id", "")
+            if tc_id:
+                declared_ids.add(tc_id)
+
+    # Collect all tool_call_ids that have results
+    answered_ids: set[str] = set()
+    for entry in template:
+        if entry.get("role") == "tool":
+            tc_id = entry.get("tool_call_id", "")
+            if tc_id:
+                answered_ids.add(tc_id)
+
+    # Find orphaned tool_call_ids (declared but not answered)
+    orphaned = declared_ids - answered_ids
+    if not orphaned:
+        return
+
+    # Find the position after the last tool result or assistant(tc) message
+    # so we can insert the synthetic results in the right place
+    insert_pos = len(template)
+    for i in range(len(template) - 1, -1, -1):
+        role = template[i].get("role", "")
+        if role == "tool":
+            insert_pos = i + 1
+            break
+        elif role == "assistant" and template[i].get("tool_calls"):
+            insert_pos = i + 1
+            break
+
+    for orphan_id in sorted(orphaned):
+        logger.info("synthesizing missing tool result for tool_call_id=%s", orphan_id)
+        template.insert(insert_pos, {
+            "role": "tool",
+            "content": "[tool result pending — no result available]",
+            "tool_call_id": orphan_id,
+        })
+        insert_pos += 1  # keep insertion order correct
 
 
 def _build_native_tools(tools: list[OpenAITool] | None) -> list[dict] | None:
