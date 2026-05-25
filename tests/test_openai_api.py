@@ -1303,3 +1303,155 @@ def test_template_multi_tool_loop() -> None:
     user_texts = [e.get("content") for e in template if e["role"] == "user" and isinstance(e.get("content"), str)]
     assert any("Check the system" in str(t) for t in user_texts), \
         f"Turn-start user message missing: {user_texts}"
+
+# ── _reorder_tool_result_images ──────────────────────────────────────
+
+class TestReorderToolResultImages:
+    """Tests for _reorder_tool_result_images that moves user messages
+    between tool results to after the tool result group."""
+
+    def _make_tc(self, ids):
+        """Helper: create assistant entry with tool_calls."""
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": tid, "type": "function", "function": {"name": "test", "arguments": "{}"}} for tid in ids],
+        }
+
+    def _make_tool(self, tc_id, content="result"):
+        return {"role": "tool", "tool_call_id": tc_id, "content": content}
+
+    def _make_user(self, text="hello"):
+        return {"role": "user", "content": text}
+
+    def _make_user_image(self, text="image"):
+        return {"role": "user", "content": [{"type": "text", "text": text}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]}
+
+    def test_no_reorder_needed(self):
+        """Tool results already consecutive — no change."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            self._make_tc(["a", "b"]),
+            self._make_tool("a"),
+            self._make_tool("b"),
+        ]
+        result = _reorder_tool_result_images(entries)
+        assert [e.get("role") for e in result] == ["assistant", "tool", "tool"]
+
+    def test_user_image_between_tool_results(self):
+        """user(image) between tool results → moved after last tool."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            self._make_tc(["a", "b", "c"]),
+            self._make_tool("a"),
+            self._make_user_image(),  # should move after tool(c)
+            self._make_tool("b"),
+            self._make_tool("c"),
+        ]
+        result = _reorder_tool_result_images(entries)
+        roles = [e.get("role") for e in result]
+        # user(image) moved to after all tools
+        assert roles == ["assistant", "tool", "tool", "tool", "user"], f"Got: {roles}"
+
+    def test_user_text_between_tool_results(self):
+        """Plain text user between tool results → also moved."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            self._make_tc(["a", "b"]),
+            self._make_tool("a"),
+            self._make_user("intervening text"),
+            self._make_tool("b"),
+        ]
+        result = _reorder_tool_result_images(entries)
+        roles = [e.get("role") for e in result]
+        assert roles == ["assistant", "tool", "tool", "user"], f"Got: {roles}"
+
+    def test_multiple_user_images_between_tools(self):
+        """Multiple user(image) messages between tool results → all moved."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            self._make_tc(["a", "b", "c"]),
+            self._make_tool("a"),
+            self._make_user_image("img1"),
+            self._make_tool("b"),
+            self._make_user_image("img2"),
+            self._make_tool("c"),
+        ]
+        result = _reorder_tool_result_images(entries)
+        roles = [e.get("role") for e in result]
+        assert roles == ["assistant", "tool", "tool", "tool", "user", "user"], f"Got: {roles}"
+
+    def test_no_reorder_when_user_after_all_tools(self):
+        """User after all tool results → no change needed."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            self._make_tc(["a", "b"]),
+            self._make_tool("a"),
+            self._make_tool("b"),
+            self._make_user_image(),
+        ]
+        result = _reorder_tool_result_images(entries)
+        assert result == entries  # unchanged
+
+    def test_no_reorder_when_no_tool_calls(self):
+        """No assistant(tool_calls) → no reordering."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "bye"},
+        ]
+        result = _reorder_tool_result_images(entries)
+        assert result == entries  # unchanged
+
+    def test_user_before_first_tool_not_moved(self):
+        """User message before any tool result (not between) → not moved."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            self._make_tc(["a"]),
+            self._make_user("before tool"),
+            self._make_tool("a"),
+        ]
+        # User is between assistant(tc) and tool, but there's no tool
+        # after the user that it's blocking. last_tool_pos = 2, max(pending) = 1
+        # So last_tool_pos > max(pending) is True, and the user gets moved.
+        # Actually this IS correct behavior — SAP wants tool right after assistant(tc).
+        result = _reorder_tool_result_images(entries)
+        roles = [e.get("role") for e in result]
+        assert roles == ["assistant", "tool", "user"], f"Got: {roles}"
+
+    def test_preserves_tool_call_ids(self):
+        """Tool results keep their tool_call_ids after reordering."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            self._make_tc(["call_1", "call_2"]),
+            self._make_tool("call_1", "screenshot result"),
+            self._make_user_image(),
+            self._make_tool("call_2", "console result"),
+        ]
+        result = _reorder_tool_result_images(entries)
+        tool_ids = [e.get("tool_call_id") for e in result if e.get("role") == "tool"]
+        assert tool_ids == ["call_1", "call_2"]
+
+    def test_empty_list(self):
+        from app.openai_api import _reorder_tool_result_images
+        assert _reorder_tool_result_images([]) == []
+
+    def test_separate_assistant_tc_groups(self):
+        """Two separate assistant(tc) groups — each reordered independently."""
+        from app.openai_api import _reorder_tool_result_images
+        entries = [
+            self._make_tc(["a", "b"]),
+            self._make_tool("a"),
+            self._make_user_image("img_a"),
+            self._make_tool("b"),
+            # assistant without tc acts as boundary
+            {"role": "assistant", "content": "done"},
+            self._make_tc(["c", "d"]),
+            self._make_tool("c"),
+            self._make_user_image("img_c"),
+            self._make_tool("d"),
+        ]
+        result = _reorder_tool_result_images(entries)
+        roles = [e.get("role") for e in result]
+        assert roles == ["assistant", "tool", "tool", "user", "assistant", "assistant", "tool", "tool", "user"], f"Got: {roles}"

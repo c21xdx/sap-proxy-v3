@@ -643,6 +643,9 @@ def _build_messages_history_with_images(messages: list[OpenAIMessage]) -> list[d
     history = _repair_tool_adjacency(history)
     _ensure_tool_results_complete(history)
 
+    # Move user(image) messages that break tool result adjacency
+    history = _reorder_tool_result_images(history)
+
     return history
 
 
@@ -752,6 +755,9 @@ def _build_template_messages(messages: list[OpenAIMessage], tools: list[OpenAITo
     # "tool_call_ids did not have response messages". Synthesize missing results.
     _ensure_tool_results_complete(current)
 
+    # Move user(image) messages that break tool result adjacency
+    current = _reorder_tool_result_images(current)
+
     if tools and current and current[-1].get("role") == "tool":
         current.append({"role": "user", "content": "Please continue with the next step based on the tool results above."})
 
@@ -828,6 +834,85 @@ def _build_native_tools(tools: list[OpenAITool] | None) -> list[dict] | None:
         }
         for t in tools
     ]
+
+
+def _reorder_tool_result_images(entries: list[dict]) -> list[dict]:
+    """Move user messages that appear between tool results to after the group.
+
+    Some clients (e.g. Shelley agent) send a user message (often with image_url)
+    immediately after a tool result, before the remaining tool results from the
+    same assistant(tool_calls). For example:
+
+        assistant(tool_calls: [A, B, C])
+        tool(result for A)
+        user(image from A)      ← breaks SAP adjacency!
+        tool(result for B)
+        tool(result for C)
+
+    SAP requires all tool results to be consecutive after assistant(tool_calls).
+    This function detects such user messages and moves them to after the last
+    tool result in the group, producing:
+
+        assistant(tool_calls: [A, B, C])
+        tool(result for A)
+        tool(result for B)
+        tool(result for C)
+        user(image from A)      ← moved after all tool results
+    """
+    if not entries:
+        return entries
+
+    result = list(entries)
+    i = 0
+    while i < len(result):
+        entry = result[i]
+        # Find an assistant message with tool_calls
+        if entry.get("role") == "assistant" and entry.get("tool_calls"):
+            # Collect consecutive tool and user messages that follow
+            j = i + 1
+            pending_users = []  # user messages to move (indices)
+            last_tool_pos = -1  # position of last tool message in this group
+
+            while j < len(result):
+                nxt = result[j]
+                if nxt.get("role") == "tool":
+                    last_tool_pos = j
+                    j += 1
+                    continue
+                elif nxt.get("role") == "user":
+                    # user message between tool results — move it later
+                    pending_users.append(j)
+                    j += 1
+                    continue
+                else:
+                    # Boundary: non-tool, non-user message ends the group
+                    break
+
+            # If there are pending user messages and tool results after them,
+            # move the user messages to after the last tool result
+            if pending_users and last_tool_pos > max(pending_users):
+                # Remove user messages from current positions (reverse order to preserve indices)
+                moved = []
+                for idx in reversed(pending_users):
+                    moved.append(result.pop(idx))
+                moved.reverse()
+                # Insert after the last tool result group
+                # Find the insert point by scanning from the assistant(tc)
+                insert_at = i + 1
+                while insert_at < len(result):
+                    if result[insert_at].get("role") in ("tool", "user"):
+                        insert_at += 1
+                        continue
+                    else:
+                        break
+                for k, msg in enumerate(moved):
+                    result.insert(insert_at + k, msg)
+                # Don't advance i — re-check this position
+                continue
+
+        i += 1
+
+    return result
 
 
 def _estimate_template_size(template: list[dict]) -> int:
