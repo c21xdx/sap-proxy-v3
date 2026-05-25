@@ -1,0 +1,14 @@
+[Unit]
+Description=SAP Proxy V3 (Python/FastAPI — OpenAI-only)
+After=network.target
+
+[Service]
+Type=simple
+User=exedev
+WorkingDirectory=/home/exedev/107sapv3
+ExecStart=/home/exedev/107sapv3/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8013
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
