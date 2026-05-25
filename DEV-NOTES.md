@@ -285,3 +285,41 @@ v2 的 Anthropic 端点 `/v1/messages` 实质是 OpenAI 管道上的格式翻译
 
 Claude 通过 v2 Anthropic 端点"正常工作"不是格式优势，而是 Claude 的单 tool_call 模式
 刚好绕过了 turn boundary bug。GPT-5.4 的并行 tool_call 暴露了问题。
+
+---
+
+## §53 Tool result 之间的 user 消息重排序
+
+**症状**: GPT-5.4 并行 tool_calls（screenshot + console_logs + eval）后，
+Shelley 将 screenshot 的 image_url 作为 user 消息放在 tool 结果之间，
+SAP 400: "assistant message with 'tool_calls' must be followed by tool messages"。
+Claude 不触发此问题因为 Claude 只发单个 tool_call。
+
+**根因**: Shelley 的 agent 格式约定——tool result 后如有 image，发一条
+`user(content=[{type: text}, {type: image_url}])` 消息。当并行 tool_calls 时：
+
+```
+assistant(tool_calls: [screenshot, console_logs, eval])
+tool(screenshot result)           ← 第1个结果
+user(image_url from screenshot)   ← SAP 认为这是新 turn！
+tool(console_logs result)         ← 孤立 tool result
+tool(eval result)                 ← 孤立 tool result
+```
+
+SAP 要求 `assistant(tc) → tool → tool → tool` 连续出现，中间不能插 user。
+
+**修复**: `_reorder_tool_result_images()` — 检测 assistant(tool_calls) 后
+tool 结果之间出现的 user 消息，移到 tool 结果组之后：
+
+```
+assistant(tool_calls: [screenshot, console_logs, eval])
+tool(screenshot result)
+tool(console_logs result)
+tool(eval result)
+user(image_url from screenshot)   ← 移到最后
+```
+
+应用于 `_build_template_messages` 和 `_build_messages_history_with_images` 两个路径。
+
+注意：此函数处理所有 user 消息（不仅限 image_url），因为纯文本 user 消息
+在 tool 结果之间也会破坏 SAP 邻接性。
