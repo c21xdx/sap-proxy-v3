@@ -345,7 +345,7 @@ def _find_turn_start(messages: list[OpenAIMessage]) -> int:
     return turn_start
 
 
-def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
+def _build_messages_history(messages: list[OpenAIMessage], *, keep_images: bool = False) -> list[dict]:
     """Build messages_history for SAP completionV2.
 
     Includes all messages BEFORE the current turn.
@@ -358,6 +358,11 @@ def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
 
     Truncates oldest history if it exceeds MAX_HISTORY_TURNS
     or MAX_HISTORY_TOKENS limits.
+
+    Args:
+        keep_images: If True, preserve image_url blocks in user messages
+            (needed for multi-round agent vision). If False, drop image_url
+            and only keep text content.
     """
     turn_start = _find_turn_start(messages)
 
@@ -390,7 +395,29 @@ def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
         text = _message_text(message).strip()
 
         if message.role == "user":
-            if text:
+            if keep_images and isinstance(message.content, list):
+                # Preserve image_url blocks in user messages
+                content_blocks = []
+                for part in message.content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "image_url":
+                            content_blocks.append(part)
+                        elif part.get("type") == "text" and isinstance(part.get("text"), str):
+                            content_blocks.append({"type": "text", "text": part["text"]})
+                if content_blocks:
+                    entry = {"role": "user", "content": content_blocks}
+                    history.append(entry)
+                    # Estimate chars for token budget (image_url data is huge)
+                    for b in content_blocks:
+                        if b.get("type") == "image_url":
+                            total_chars += len(b.get("image_url", {}).get("url", ""))
+                        elif b.get("type") == "text":
+                            total_chars += len(b.get("text", ""))
+                elif text:
+                    entry = {"role": "user", "content": text}
+                    history.append(entry)
+                    total_chars += len(text)
+            elif text:
                 entry = {"role": "user", "content": text}
                 history.append(entry)
                 total_chars += len(text)
@@ -420,19 +447,27 @@ def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
             total_chars += len(content)
 
     # Truncate from the front if token budget exceeded.
-    # Previously this was done inline with a `break` after each budget check,
-    # which caused a critical bug: when a large entry (e.g. image_url) pushed
-    # the budget over the limit mid-loop, the break dropped ALL subsequent
-    # messages — including the assistant with tool_use whose tool_result
-    # was in the template, causing SAP 400 "unexpected tool_use_id" errors.
-    # Now we collect all entries first, then truncate from the front once.
-    if total_chars // 4 > settings.max_history_tokens:
-        while history and total_chars // 4 > settings.max_history_tokens:
+    # Collect all entries first, then truncate from the front once to avoid
+    # the bug where a large entry (e.g. image_url) pushing the budget over
+    # mid-loop would drop ALL subsequent messages — including assistant
+    # with tool_use whose tool_result is in the template (SAP 400).
+    # NOTE: char//2 is a rough token estimate that works better for mixed
+    # CJK+ASCII content (1 CJK char ≈ 1-2 tokens, not 4 chars/token).
+    if total_chars // 2 > settings.max_history_tokens:
+        while history and total_chars // 2 > settings.max_history_tokens:
             removed = history.pop(0)
-            removed_chars = len(str(removed.get("content", "")))
+            rc = removed.get("content")
+            if isinstance(rc, list):
+                for b in rc:
+                    if isinstance(b, dict):
+                        if b.get("type") == "image_url":
+                            total_chars -= len(b.get("image_url", {}).get("url", ""))
+                        elif b.get("type") == "text":
+                            total_chars -= len(b.get("text", ""))
+            elif isinstance(rc, str):
+                total_chars -= len(rc)
             for tc in removed.get("tool_calls", []):
-                removed_chars += len(tc.get("function", {}).get("arguments", ""))
-            total_chars -= removed_chars
+                total_chars -= len(tc.get("function", {}).get("arguments", ""))
 
     # Validate tool_use→tool_result adjacency after truncation.
     # If truncation removed an assistant message containing tool_use,
@@ -441,9 +476,11 @@ def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
     history = _repair_tool_adjacency(history)
     _ensure_tool_results_complete(history)
 
+    # Move user(image) messages that break tool result adjacency
+    if keep_images:
+        history = _reorder_tool_result_images(history)
+
     return history
-
-
 def _build_prompt_text(messages: list[OpenAIMessage], tools: list[OpenAITool] | None = None) -> str:
     """Legacy: build full prompt text with all messages concatenated."""
     system_parts: list[str] = []
@@ -496,133 +533,6 @@ def _build_prompt_text(messages: list[OpenAIMessage], tools: list[OpenAITool] | 
     if system_parts:
         dialogue_parts.insert(0, "System:\n" + "\n\n".join(system_parts))
     return "\n\n".join(dialogue_parts)
-
-
-def _build_messages_history_with_images(messages: list[OpenAIMessage]) -> list[dict]:
-    """Build messages_history for SAP, preserving image_url blocks.
-
-    Unlike _build_messages_history which drops image_url (only keeps text),
-    this preserves image_url content blocks in user messages. This allows
-    SAP to see the complete conversation including images in messages_history,
-    which is critical for multi-round agent vision: the model correctly
-    reasons about tool use (e.g., calling read_image for new images)
-    when it sees the full conversation in order.
-
-    SAP accepts image_url in messages_history (verified).
-    """
-    turn_start = _find_turn_start(messages)
-
-    if turn_start <= 0:
-        return []
-
-    # Collect all history messages (before the current turn)
-    history_msgs: list[tuple[int, OpenAIMessage]] = []
-    for i, message in enumerate(messages):
-        if i >= turn_start:
-            break
-        if message.role == "system":
-            continue
-        history_msgs.append((i, message))
-
-    # Truncate from the front if too many turns
-    max_turns = settings.max_history_turns
-    user_indices = [idx for idx, (i, m) in enumerate(history_msgs) if m.role == "user"]
-    if len(user_indices) > max_turns:
-        cutoff_idx = user_indices[-max_turns]
-        history_msgs = history_msgs[cutoff_idx:]
-
-    # Build history entries, preserving image_url
-    history: list[dict] = []
-    total_chars = 0
-    for i, message in history_msgs:
-        text = _message_text(message).strip()
-
-        if message.role == "user":
-            # Preserve image_url blocks in user messages
-            if isinstance(message.content, list):
-                content_blocks = []
-                for part in message.content:
-                    if isinstance(part, dict):
-                        if part.get("type") == "image_url":
-                            content_blocks.append(part)
-                        elif part.get("type") == "text" and isinstance(part.get("text"), str):
-                            content_blocks.append({"type": "text", "text": part["text"]})
-                if content_blocks:
-                    entry = {"role": "user", "content": content_blocks}
-                    history.append(entry)
-                    # Estimate chars for token budget (image_url data is huge)
-                    for b in content_blocks:
-                        if b.get("type") == "image_url":
-                            total_chars += len(b.get("image_url", {}).get("url", ""))
-                        elif b.get("type") == "text":
-                            total_chars += len(b.get("text", ""))
-                elif text:
-                    entry = {"role": "user", "content": text}
-                    history.append(entry)
-                    total_chars += len(text)
-            elif text:
-                entry = {"role": "user", "content": text}
-                history.append(entry)
-                total_chars += len(text)
-        elif message.role == "assistant":
-            if message.tool_calls:
-                entry: dict = {"role": "assistant", "content": text or ""}
-                entry["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                    }
-                    for tc in message.tool_calls
-                ]
-                history.append(entry)
-                total_chars += len(text) + sum(len(tc.function.arguments) for tc in message.tool_calls)
-            elif text:
-                entry = {"role": "assistant", "content": text}
-                history.append(entry)
-                total_chars += len(text)
-        elif message.role == "tool":
-            content = text or _build_tool_result_message(message)
-            entry = {"role": "tool", "content": content}
-            if message.tool_call_id:
-                entry["tool_call_id"] = message.tool_call_id
-            history.append(entry)
-            total_chars += len(content)
-
-    # Truncate from the front if token budget exceeded.
-    # Previously this was done inline with a `break` after each budget check,
-    # which caused a critical bug: when a large entry (e.g. image_url 230KB+)
-    # pushed the budget over the limit mid-loop, the break dropped ALL
-    # subsequent messages — including the assistant with tool_use whose
-    # tool_result was in the template, causing SAP 400 "unexpected tool_use_id"
-    # errors. Now we collect all entries first, then truncate from the front.
-    if total_chars // 4 > settings.max_history_tokens:
-        while history and total_chars // 4 > settings.max_history_tokens:
-            removed = history.pop(0)
-            rc = removed.get("content")
-            if isinstance(rc, list):
-                for b in rc:
-                    if isinstance(b, dict):
-                        if b.get("type") == "image_url":
-                            total_chars -= len(b.get("image_url", {}).get("url", ""))
-                        elif b.get("type") == "text":
-                            total_chars -= len(b.get("text", ""))
-            elif isinstance(rc, str):
-                total_chars -= len(rc)
-            for tc in removed.get("tool_calls", []):
-                total_chars -= len(tc.get("function", {}).get("arguments", ""))
-
-    # Validate tool_use→tool_result adjacency after truncation.
-    # If truncation removed an assistant message containing tool_use,
-    # any subsequent tool result referencing that tool_use_id becomes orphaned.
-    # SAP's upstream LLM rejects orphaned tool_results with 400.
-    history = _repair_tool_adjacency(history)
-    _ensure_tool_results_complete(history)
-
-    # Move user(image) messages that break tool result adjacency
-    history = _reorder_tool_result_images(history)
-
-    return history
 
 
 def _build_template_messages(messages: list[OpenAIMessage], tools: list[OpenAITool] | None = None) -> list[dict]:
@@ -1014,7 +924,7 @@ def _to_completion_request(req: OpenAIChatRequest, model_id: str, version: str, 
         # This preserves conversation order so the model correctly reasons
         # about when to call tools (like read_image for new images).
         template_messages = _build_template_messages(req.messages, req.tools)
-        messages_history = _build_messages_history_with_images(req.messages)
+        messages_history = _build_messages_history(req.messages, keep_images=True)
         # Text mode: has_images=False so SAP includes stream + messages_history
         effective_has_images = False
         stream_enabled = False if settings.completion.force_non_stream else req.stream

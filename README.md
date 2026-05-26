@@ -7,7 +7,7 @@ Point any OpenAI SDK, agent framework, or curl command at this proxy and use SAP
 ## Features
 
 - **Drop-in OpenAI compatible** — works with OpenAI SDKs, LangChain, AutoGen, Shelley, etc.
-- **Model aliases** — `gpt-5.4` → `openai--gpt-5.4`, `claude-4.5-sonnet` → `anthropic--claude-4.5-sonnet`
+- **Model aliases** — `claude-4.5-sonnet` → `anthropic--claude-4.5-sonnet`, `gpt5.4` → `gpt-5.4`
 - **Reasoning effort via suffix** — `gpt-5.4:high`, `claude-4.6-opus:high`
 - **Claude thinking passthrough** — adaptive thinking for Claude 4.6+, budget_tokens for 4.5
 - **Tool calls** — native `tool_calls` + `<function_call>` tag fallback
@@ -27,22 +27,29 @@ Point any OpenAI SDK, agent framework, or curl command at this proxy and use SAP
 
 ## Supported Models
 
-| Alias | SAP Canonical ID | Provider |
+Models available depend on your SAP AI Launchpad deployment. Below are
+common models with their aliases. Models without aliases must be referenced
+by their SAP canonical ID (e.g. `anthropic--claude-4.7-opus`, `google--gemini-3.1-flash-lite`).
+
+| Alias(es) | SAP Canonical ID | Provider |
 |---|---|---|
-| `gpt-5.4`, `gpt5.4`, `gpt-5.4-turbo` | `openai--gpt-5.4` | OpenAI |
-| `gpt-5.4-nano` | `openai--gpt-5.4-nano` | OpenAI |
-| `gpt-5.3-codex` | `openai--gpt-5.3-codex` | OpenAI |
-| `gpt-5.2` | `openai--gpt-5.2` | OpenAI |
-| `o4-mini` | `openai--o4-mini` | OpenAI |
-| `o3` | `openai--o3` | OpenAI |
-| `claude-opus-4-7`, `claude-4.7-opus` | `anthropic--claude-4.7-opus` | Anthropic |
-| `claude-opus-4-6`, `claude-4.6-opus` | `anthropic--claude-4.6-opus` | Anthropic |
-| `claude-sonnet-4-6`, `claude-4.6-sonnet` | `anthropic--claude-4.6-sonnet` | Anthropic |
+| `gpt-5.4`, `gpt5.4`, `gpt-5.4-turbo` | `gpt-5.4` | OpenAI |
+| — | `openai--gpt-5.4-nano` | OpenAI |
+| — | `openai--gpt-5.3-codex` | OpenAI |
+| — | `openai--gpt-5.2` | OpenAI |
+| — | `openai--o4-mini` | OpenAI |
+| — | `openai--o3` | OpenAI |
+| `claude-opus-4-5`, `claude-4.5-opus` | `anthropic--claude-4.5-opus` | Anthropic |
 | `claude-sonnet-4-5`, `claude-4.5-sonnet` | `anthropic--claude-4.5-sonnet` | Anthropic |
 | `claude-haiku-4-5`, `claude-4.5-haiku` | `anthropic--claude-4.5-haiku` | Anthropic |
-| `gemini-3.1-flash-lite` | `google--gemini-3.1-flash-lite` | Google |
+| `claude-opus-4-6`, `claude-4.6-opus` | `anthropic--claude-4.6-opus` | Anthropic |
+| `claude-sonnet-4-6`, `claude-4.6-sonnet` | `anthropic--claude-4.6-sonnet` | Anthropic |
+| — | `anthropic--claude-4.7-opus` | Anthropic |
+| — | `google--gemini-3.1-flash-lite` | Google |
 
-Use the alias or the canonical ID — both work.
+Use an alias or the canonical ID — both work. Models without a listed alias
+only accept their canonical ID but are still auto-accepted if the name matches
+a known pattern (e.g. `gpt-*`, `anthropic--*`).
 
 ### Reasoning Effort
 
