@@ -12,7 +12,7 @@ from app.openai_api import (
     resolve_model,
     _to_completion_request,
 )
-from app import openai_api
+from app import model_registry, openai_api
 
 
 METADATA = {
@@ -122,7 +122,7 @@ def test_parse_nonstream_json_text() -> None:
 def test_fetch_supported_models_returns_all_from_metadata(monkeypatch) -> None:
     """fetch_supported_models returns all non-deprecated models from metadata
     when ALLOWED_MODELS is empty (auto-discover mode)."""
-    from app import openai_api
+    from app import model_registry, openai_api
 
     class FakeResp:
         status_code = 200
@@ -136,9 +136,9 @@ def test_fetch_supported_models_returns_all_from_metadata(monkeypatch) -> None:
         def get(self, url):
             return FakeResp()
 
-    monkeypatch.setattr(openai_api, 'get_cached_session_curl_cffi', lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com/aic/index.html'))
+    monkeypatch.setattr(model_registry, 'get_cached_session_curl_cffi', lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com/aic/index.html'))
 
-    models = openai_api.fetch_supported_models('u', 'p')
+    models = model_registry.fetch_supported_models('u', 'p')
     ids = [m.id for m in models]
     # All models from metadata should be present (auto-discover)
     assert 'anthropic--claude-4.6-opus' in ids
@@ -150,7 +150,7 @@ def test_fetch_supported_models_returns_all_from_metadata(monkeypatch) -> None:
 
 
 def test_model_owned_by_for_bare_gpt() -> None:
-    from app.openai_api import _model_owned_by
+    from app.model_registry import _model_owned_by
     assert _model_owned_by('gpt-5.4') == 'openai'
 
 
@@ -162,7 +162,7 @@ def test_extract_supported_models_keeps_claude46_focus_models() -> None:
 
 
 def test_supported_model_filter_uses_config(monkeypatch) -> None:
-    from app import openai_api
+    from app import model_registry, openai_api
     monkeypatch.setattr(openai_api.settings, 'allowed_models', ['gpt-5.4'])
     models = extract_supported_models(METADATA)
     ids = [m.id for m in models]
@@ -170,7 +170,7 @@ def test_supported_model_filter_uses_config(monkeypatch) -> None:
 
 
 def test_inspect_supported_models(monkeypatch) -> None:
-    from app import openai_api
+    from app import model_registry, openai_api
 
     class FakeResp:
         status_code = 200
@@ -185,14 +185,14 @@ def test_inspect_supported_models(monkeypatch) -> None:
             return FakeResp()
 
     monkeypatch.setattr(openai_api.settings, 'allowed_models', ['anthropic--claude-4.6-opus', 'gpt-5.4'])
-    monkeypatch.setattr(openai_api, 'get_cached_session_curl_cffi', lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com/aic/index.html'))
+    monkeypatch.setattr(model_registry, 'get_cached_session_curl_cffi', lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com/aic/index.html'))
     monkeypatch.setattr(
-        openai_api,
+        model_registry,
         'check_model_access_with_password_curl_cffi',
         lambda username, password, model_name, model_version, base_url=None, deployment_id=None, resource_group_id=None: type('R', (), {'allowed': model_name != 'gpt-5.4', 'status_code': 200 if model_name != 'gpt-5.4' else 403, 'detail': '' if model_name != 'gpt-5.4' else 'forbidden'})(),
     )
 
-    entries = openai_api.inspect_supported_models('u', 'p')
+    entries = model_registry.inspect_supported_models('u', 'p')
     assert [entry.id for entry in entries] == ['anthropic--claude-4.6-opus', 'gpt-5.4']
     assert entries[0].access_allowed is True
     assert entries[1].access_allowed is False
@@ -289,7 +289,7 @@ def test_is_html_response_detection() -> None:
 
 
 def test_metadata_cache() -> None:
-    from app import openai_api
+    from app import model_registry, openai_api
 
     class FakeResp:
         status_code = 200
@@ -307,29 +307,29 @@ def test_metadata_cache() -> None:
             call_count += 1
             return FakeResp()
 
-    openai_api._metadata_cache.clear()
+    model_registry._metadata_cache.clear()
     monkeypatch_like = type('M', (), {
         'setattr': lambda self, obj, name, val: setattr(obj, name, val)
     })()
-    orig = openai_api.get_cached_session_curl_cffi
+    orig = model_registry.get_cached_session_curl_cffi
     try:
-        openai_api.get_cached_session_curl_cffi = lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com')
-        models1 = openai_api._get_cached_models('u', 'p')
-        models2 = openai_api._get_cached_models('u', 'p')
+        model_registry.get_cached_session_curl_cffi = lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com')
+        models1 = model_registry._get_cached_models('u', 'p')
+        models2 = model_registry._get_cached_models('u', 'p')
         assert len(models1) > 0
         assert call_count == 1  # only one API call for two requests
         assert [m.id for m in models1] == [m.id for m in models2]
     finally:
-        openai_api.get_cached_session_curl_cffi = orig
-        openai_api._metadata_cache.clear()
+        model_registry.get_cached_session_curl_cffi = orig
+        model_registry._metadata_cache.clear()
 
 
 def test_invalidate_metadata_cache() -> None:
-    from app import openai_api
-    openai_api._metadata_cache['test'] = (0, [])
-    assert len(openai_api._metadata_cache) == 1
-    openai_api.invalidate_metadata_cache()
-    assert len(openai_api._metadata_cache) == 0
+    from app import model_registry, openai_api
+    model_registry._metadata_cache['test'] = (0, [])
+    assert len(model_registry._metadata_cache) == 1
+    model_registry.invalidate_metadata_cache()
+    assert len(model_registry._metadata_cache) == 0
 
 
 def test_history_truncation_counts_tool_calls_arguments() -> None:
@@ -337,7 +337,7 @@ def test_history_truncation_counts_tool_calls_arguments() -> None:
     Bug: previously only subtracted content length, not arguments length.
     This caused total_chars to stay artificially high after truncation."""
     from app.openai_api import _build_messages_history, _build_template_messages, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
-    from app import openai_api
+    from app import model_registry, openai_api
 
     # Save and override settings to force truncation
     orig_tokens = openai_api.settings.max_history_tokens
@@ -377,7 +377,7 @@ def test_history_truncation_counts_tool_calls_arguments() -> None:
 def test_history_truncation_preserves_recent_entries() -> None:
     """When history exceeds token budget, older entries are dropped but recent ones preserved."""
     from app.openai_api import _build_messages_history, OpenAIMessage
-    from app import openai_api
+    from app import model_registry, openai_api
 
     orig_tokens = openai_api.settings.max_history_tokens
     orig_turns = openai_api.settings.max_history_turns
@@ -406,7 +406,7 @@ def test_history_truncation_preserves_recent_entries() -> None:
 def test_history_truncation_turn_limit() -> None:
     """History is truncated to max_history_turns user messages."""
     from app.openai_api import _build_messages_history, OpenAIMessage
-    from app import openai_api
+    from app import model_registry, openai_api
 
     orig_turns = openai_api.settings.max_history_turns
     orig_tokens = openai_api.settings.max_history_tokens
@@ -433,7 +433,7 @@ def test_history_truncation_turn_limit() -> None:
 def test_history_with_tool_calls_keeps_intact_pairs() -> None:
     """Assistant tool_calls and corresponding tool results should stay together."""
     from app.openai_api import _build_messages_history, _build_template_messages, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
-    from app import openai_api
+    from app import model_registry, openai_api
 
     orig_tokens = openai_api.settings.max_history_tokens
     orig_turns = openai_api.settings.max_history_turns
@@ -472,7 +472,7 @@ def test_history_with_tool_calls_keeps_intact_pairs() -> None:
 def test_resolve_model_cached_rejects_unknown_names() -> None:
     """resolve_model_cached must return None for completely random model names
     when metadata is available but the model is not found there."""
-    from app import openai_api
+    from app import model_registry, openai_api
 
     class FakeResp:
         status_code = 200
@@ -486,30 +486,30 @@ def test_resolve_model_cached_rejects_unknown_names() -> None:
         def get(self, url):
             return FakeResp()
 
-    openai_api._metadata_cache.clear()
-    orig = openai_api.get_cached_session_curl_cffi
+    model_registry._metadata_cache.clear()
+    orig = model_registry.get_cached_session_curl_cffi
     try:
-        openai_api.get_cached_session_curl_cffi = lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com')
+        model_registry.get_cached_session_curl_cffi = lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com')
         # Populate cache
-        openai_api._get_cached_models('u', 'p')
+        model_registry._get_cached_models('u', 'p')
         # Random string should be rejected
-        assert openai_api.resolve_model_cached('totally-made-up-model', 'u', 'p') is None
-        assert openai_api.resolve_model_cached('foo', 'u', 'p') is None
-        assert openai_api.resolve_model_cached('abc123', 'u', 'p') is None
+        assert model_registry.resolve_model_cached('totally-made-up-model', 'u', 'p') is None
+        assert model_registry.resolve_model_cached('foo', 'u', 'p') is None
+        assert model_registry.resolve_model_cached('abc123', 'u', 'p') is None
         # But a real model from metadata should work
-        assert openai_api.resolve_model_cached('gpt-5.4', 'u', 'p') is not None
+        assert model_registry.resolve_model_cached('gpt-5.4', 'u', 'p') is not None
     finally:
-        openai_api.get_cached_session_curl_cffi = orig
-        openai_api._metadata_cache.clear()
+        model_registry.get_cached_session_curl_cffi = orig
+        model_registry._metadata_cache.clear()
 
 
 def test_resolve_model_cached_alias_still_works_without_metadata() -> None:
     """When metadata is unavailable, known aliases still resolve."""
-    from app import openai_api
+    from app import model_registry, openai_api
 
-    openai_api._metadata_cache.clear()
+    model_registry._metadata_cache.clear()
     # No username/password → metadata won't be fetched
-    resolved = openai_api.resolve_model_cached('claude-sonnet-4-5')
+    resolved = model_registry.resolve_model_cached('claude-sonnet-4-5')
     assert resolved is not None
     assert resolved.id == 'anthropic--claude-4.5-sonnet'
     assert resolved.version == 'latest'
@@ -517,30 +517,30 @@ def test_resolve_model_cached_alias_still_works_without_metadata() -> None:
 
 def test_resolve_model_cached_rejects_random_without_metadata() -> None:
     """When metadata is unavailable, completely unknown names are rejected."""
-    from app import openai_api
+    from app import model_registry, openai_api
 
-    openai_api._metadata_cache.clear()
-    assert openai_api.resolve_model_cached('xyz-not-a-model') is None
-    assert openai_api.resolve_model_cached('random-gibberish') is None
+    model_registry._metadata_cache.clear()
+    assert model_registry.resolve_model_cached('xyz-not-a-model') is None
+    assert model_registry.resolve_model_cached('random-gibberish') is None
 
 
 def test_resolve_model_cached_allows_canonical_ids_without_metadata() -> None:
     """When metadata is unavailable, canonical SAP model IDs are accepted."""
-    from app import openai_api
+    from app import model_registry, openai_api
 
-    openai_api._metadata_cache.clear()
+    model_registry._metadata_cache.clear()
     # These look like real model IDs (vendor--model pattern)
-    r = openai_api.resolve_model_cached('anthropic--claude-4.6-opus')
+    r = model_registry.resolve_model_cached('anthropic--claude-4.6-opus')
     assert r is not None
     assert r.id == 'anthropic--claude-4.6-opus'
     # GPT family
-    r = openai_api.resolve_model_cached('gpt-5.4')
+    r = model_registry.resolve_model_cached('gpt-5.4')
     assert r is not None
     assert r.id == 'gpt-5.4'
 
 
 def test_looks_like_model_id() -> None:
-    from app.openai_api import _looks_like_model_id
+    from app.model_registry import _looks_like_model_id
     # Canonical vendor--model patterns
     assert _looks_like_model_id('anthropic--claude-4.6-opus') is True
     assert _looks_like_model_id('google--gemini-2.5-flash') is True
@@ -559,7 +559,7 @@ def test_looks_like_model_id() -> None:
 
 def test_inspect_supported_models_empty_allowlist(monkeypatch) -> None:
     """When allowed_models is empty (auto-discover), all non-deprecated models appear."""
-    from app import openai_api
+    from app import model_registry, openai_api
 
     class FakeResp:
         status_code = 200
@@ -574,14 +574,14 @@ def test_inspect_supported_models_empty_allowlist(monkeypatch) -> None:
             return FakeResp()
 
     monkeypatch.setattr(openai_api.settings, 'allowed_models', [])
-    monkeypatch.setattr(openai_api, 'get_cached_session_curl_cffi', lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com/aic/index.html'))
+    monkeypatch.setattr(model_registry, 'get_cached_session_curl_cffi', lambda username, password, force_refresh=False, base_url=None: (FakeSession(), 'https://example.com/aic/index.html'))
     monkeypatch.setattr(
-        openai_api,
+        model_registry,
         'check_model_access_with_password_curl_cffi',
         lambda username, password, model_name, model_version, base_url=None, deployment_id=None, resource_group_id=None: type('R', (), {'allowed': True, 'status_code': 200, 'detail': ''})(),
     )
 
-    entries = openai_api.inspect_supported_models('u', 'p')
+    entries = model_registry.inspect_supported_models('u', 'p')
     ids = [e.id for e in entries]
     # All non-deprecated models from metadata should appear
     assert 'anthropic--claude-4.5-sonnet' in ids
@@ -714,7 +714,7 @@ def test_multimodal_stream_returns_sse_format(monkeypatch):
     """Multimodal + stream=true: response should still be SSE format (buffered pseudo-stream)."""
     from fastapi.testclient import TestClient
     from app import main
-    from app.openai_api import SupportedModel
+    from app.model_registry import SupportedModel
 
     client = TestClient(main.app)
     monkeypatch.setattr(main.settings, 'api_key', '')
@@ -884,7 +884,7 @@ def test_history_truncation_does_not_drop_subsequent_messages() -> None:
     assistant with tool_use whose tool_result was in the template, causing
     SAP 400 "unexpected tool_use_id" errors."""
     from app.openai_api import _build_messages_history, _build_template_messages, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
-    from app import openai_api
+    from app import model_registry, openai_api
 
     orig_tokens = openai_api.settings.max_history_tokens
     orig_turns = openai_api.settings.max_history_turns
@@ -938,7 +938,7 @@ def test_history_truncation_with_image_does_not_drop_subsequent_messages() -> No
     after screenshot: image (230KB) pushed budget over limit → break dropped the
     assistant with tool_use → SAP rejected orphaned tool_result in template."""
     from app.openai_api import _build_messages_history_with_images, _build_template_messages, OpenAIMessage, OpenAIToolCall, OpenAIToolFunctionCall
-    from app import openai_api
+    from app import model_registry, openai_api
 
     orig_tokens = openai_api.settings.max_history_tokens
     orig_turns = openai_api.settings.max_history_turns
@@ -1022,7 +1022,7 @@ def test_repair_tool_adjacency_removes_leading_tool_messages() -> None:
     assert len(repaired) == 2
 
 def test_parse_model_effort_with_suffix() -> None:
-    from app.openai_api import _parse_model_effort
+    from app.model_registry import _parse_model_effort
     assert _parse_model_effort("gpt-5.4:high") == ("gpt-5.4", "high")
     assert _parse_model_effort("o4-mini:low") == ("o4-mini", "low")
     assert _parse_model_effort("gpt-5.4:medium") == ("gpt-5.4", "medium")
@@ -1034,7 +1034,7 @@ def test_parse_model_effort_with_suffix() -> None:
 
 
 def test_supports_reasoning_effort() -> None:
-    from app.curl_login import _supports_reasoning_effort
+    from app.model_registry import _supports_reasoning_effort
     assert _supports_reasoning_effort("gpt-5.4") is True
     assert _supports_reasoning_effort("gpt-5.2") is True
     assert _supports_reasoning_effort("gpt-5-mini") is True
@@ -1048,7 +1048,8 @@ def test_supports_reasoning_effort() -> None:
 
 def test_reasoning_effort_passed_to_completion_request() -> None:
     """model:effort suffix → reasoning_effort in CompletionRequest → in SAP params."""
-    from app.openai_api import OpenAIChatRequest, _to_completion_request, _parse_model_effort
+    from app.model_registry import _parse_model_effort
+    from app.openai_api import OpenAIChatRequest, _to_completion_request
     from app.curl_login import _build_completion_payload
 
     req = OpenAIChatRequest(
@@ -1098,7 +1099,7 @@ def test_reasoning_effort_no_suffix() -> None:
 
 def test_resolve_model_strips_effort_suffix() -> None:
     """resolve_model and resolve_model_cached should strip :effort before lookup."""
-    from app.openai_api import resolve_model, resolve_model_cached, SupportedModel
+    from app.model_registry import resolve_model, resolve_model_cached, SupportedModel
 
     models = [
         SupportedModel(id="gpt-5.4", version="2026-03-05", owned_by="openai"),
@@ -1130,20 +1131,20 @@ def test_o_series_uses_max_completion_tokens() -> None:
     assert "temperature" not in params  # o-series doesn't support temperature
 
 def test_claude_47_opus_deprecates_temperature() -> None:
-    from app.curl_login import _claude_deprecates_temperature
+    from app.model_registry import _claude_deprecates_temperature
     assert _claude_deprecates_temperature("anthropic--claude-4.7-opus") is True
     assert _claude_deprecates_temperature("anthropic--claude-4.6-sonnet") is False
     assert _claude_deprecates_temperature("anthropic--claude-4.5-sonnet") is False
     assert _claude_deprecates_temperature("gpt-5.4") is False
 
 def test_claude_adaptive_thinking_support() -> None:
-    from app.curl_login import _claude_supports_adaptive_thinking
+    from app.model_registry import _claude_supports_adaptive_thinking
     assert _claude_supports_adaptive_thinking("anthropic--claude-4.7-opus") is True
     assert _claude_supports_adaptive_thinking("anthropic--claude-4.6-sonnet") is True
     assert _claude_supports_adaptive_thinking("anthropic--claude-4.5-sonnet") is False
 
 def test_claude_enabled_thinking_support() -> None:
-    from app.curl_login import _claude_supports_enabled_thinking
+    from app.model_registry import _claude_supports_enabled_thinking
     assert _claude_supports_enabled_thinking("anthropic--claude-4.5-sonnet") is True
     assert _claude_supports_enabled_thinking("anthropic--claude-4.6-sonnet") is True
     assert _claude_supports_enabled_thinking("anthropic--claude-4.7-opus") is False

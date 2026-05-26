@@ -19,17 +19,19 @@ from app.curl_login import (
     cache_deployment, discover_deployment, execute_completion_with_password_curl_cffi,
     get_cached_deployment, session_cache,
 )
-from app.openai_api import (
+from app.model_registry import (
     MODEL_ALIASES,
+    fetch_supported_models,
+    inspect_supported_models,
+    resolve_model_cached,
+)
+from app.openai_api import (
     OpenAIChatRequest,
     OpenAIModel,
     OpenAIModelList,
     build_openai_response_from_sap,
     build_openai_response_from_text,
-    fetch_supported_models,
-    inspect_supported_models,
     iter_openai_sse,
-    resolve_model_cached,
     validate_content_blocks,
     _to_completion_request,
 )

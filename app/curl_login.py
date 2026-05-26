@@ -277,63 +277,8 @@ def _build_completion_url(base_url: str, workspace: str, resource_group_id: str)
 
 # Parameters that SAP completionV2 actually accepts per model family
 # Based on SAP error messages: completionV2 rejects unsupported params
-def _supports_reasoning_effort(model_name: str) -> bool:
-    """Check if a model supports the reasoning_effort parameter on SAP."""
-    if model_name.startswith('gpt-5'):
-        return True
-    if model_name.startswith('o1') or model_name.startswith('o3') or model_name.startswith('o4'):
-        return True
-    return False
-
-
-def _claude_supports_adaptive_thinking(model_name: str) -> bool:
-    """Check if a Claude model supports thinking.type=adaptive + output_config.effort.
-    Claude 4.6+ supports both enabled and adaptive thinking.
-    Claude 4.7+ only supports adaptive (enabled is rejected).
-    """
-    if not model_name.startswith('anthropic--claude-'):
-        return False
-    suffix = model_name.split('anthropic--claude-', 1)[1]
-    ver_str = suffix.split('-')[0]  # e.g. '4.6' or '4.7'
-    try:
-        parts = ver_str.split('.')
-        major, minor = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
-        return (major, minor) >= (4, 6)
-    except (ValueError, IndexError):
-        return False
-
-
-def _claude_deprecates_temperature(model_name: str) -> bool:
-    """Check if a Claude model has deprecated the temperature parameter.
-    Claude 4.7+ does not accept temperature.
-    """
-    if not model_name.startswith('anthropic--claude-'):
-        return False
-    suffix = model_name.split('anthropic--claude-', 1)[1]
-    ver_str = suffix.split('-')[0]
-    try:
-        parts = ver_str.split('.')
-        major, minor = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
-        return (major, minor) >= (4, 7)
-    except (ValueError, IndexError):
-        return False
-
-
-def _claude_supports_enabled_thinking(model_name: str) -> bool:
-    """Check if a Claude model supports thinking.type=enabled + budget_tokens.
-    Claude 4.5 and 4.6 support this. Claude 4.7+ does not.
-    """
-    if not model_name.startswith('anthropic--claude-'):
-        return False
-    suffix = model_name.split('anthropic--claude-', 1)[1]
-    ver_str = suffix.split('-')[0]
-    try:
-        parts = ver_str.split('.')
-        major, minor = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
-        return (4, 5) <= (major, minor) < (4, 7)
-    except (ValueError, IndexError):
-        return False
-
+# NOTE: capability functions (_supports_reasoning_effort, etc.) are in
+# app.model_registry — imported lazily to avoid circular dependency.
 
 _SAP_SUPPORTED_PARAMS: dict[str, set[str]] = {
     # Claude models (aws-bedrock): max_tokens, temperature (4.5/4.6 only),
@@ -348,6 +293,7 @@ _SAP_SUPPORTED_PARAMS: dict[str, set[str]] = {
 
 def _filter_model_params(model_name: str, params: dict[str, Any]) -> dict[str, Any]:
     """Filter params to only those SAP completionV2 accepts for this model."""
+    from app.model_registry import _claude_deprecates_temperature, _supports_reasoning_effort
     if "--" in model_name:
         owner = model_name.split("--", 1)[0]
     elif model_name.startswith(("gpt", "o1", "o3", "o4")):
@@ -383,6 +329,11 @@ def _build_model_params(model_name: str, max_tokens: int, temperature: float | N
                           stop: str | list[str] | None = None,
                           n: int | None = None,
                           reasoning_effort: str | None = None) -> dict:
+    from app.model_registry import (
+        _claude_deprecates_temperature,
+        _claude_supports_adaptive_thinking,
+        _claude_supports_enabled_thinking,
+    )
     params: dict[str, Any] = {}
     # GPT-5.x and o-series use max_completion_tokens (no temperature)
     is_openai_reasoning = model_name.startswith("gpt-5") or model_name.startswith(("o1", "o3", "o4"))
