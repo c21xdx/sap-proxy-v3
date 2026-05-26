@@ -77,7 +77,7 @@ Create `.env` with your SAP AI Launchpad credentials:
 SAP_USER=<your-sap-user>
 SAP_PASS=<your-sap-password>
 API_KEY=<your-api-key-for-proxy-auth>
-SAP_BASE_URL=YOUR_SAP_BASE_URL
+SAP_BASE_URL=<your-sap-base-url>
 SAP_DEPLOYMENT_ID=<your-deployment-id>
 SAP_RESOURCE_GROUP_ID=<your-resource-group>
 SAP_FORCE_NON_STREAM=true
@@ -99,7 +99,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sap-proxy-v3
 
 ```bash
 curl http://localhost:8013/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-5.4",
@@ -112,7 +112,7 @@ Or with any OpenAI SDK:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8013/v1", api_key="YOUR_API_KEY")
+client = OpenAI(base_url="http://localhost:8013/v1", api_key="<your-api-key>")
 resp = client.chat.completions.create(
     model="claude-4.6-sonnet:high",
     messages=[{"role": "user", "content": "Explain quantum computing"}]
