@@ -407,10 +407,16 @@ def _build_messages_history(messages: list[OpenAIMessage], *, keep_images: bool 
                 if content_blocks:
                     entry = {"role": "user", "content": content_blocks}
                     history.append(entry)
-                    # Estimate chars for token budget (image_url data is huge)
+                    # Estimate chars for token budget.
+                    # Text: ~2 chars/token (good for mixed CJK+ASCII).
+                    # image_url base64: does NOT consume text tokens — it's
+                    # processed by the vision encoder (~1-2K tokens per image
+                    # regardless of base64 length). Use a fixed estimate instead
+                    # of len(url) to avoid grossly over-counting.
+                    _IMAGE_URL_CHAR_EQUIVALENT = 4000  # ~2K tokens in char space
                     for b in content_blocks:
                         if b.get("type") == "image_url":
-                            total_chars += len(b.get("image_url", {}).get("url", ""))
+                            total_chars += _IMAGE_URL_CHAR_EQUIVALENT
                         elif b.get("type") == "text":
                             total_chars += len(b.get("text", ""))
                 elif text:
@@ -453,6 +459,8 @@ def _build_messages_history(messages: list[OpenAIMessage], *, keep_images: bool 
     # with tool_use whose tool_result is in the template (SAP 400).
     # NOTE: char//2 is a rough token estimate that works better for mixed
     # CJK+ASCII content (1 CJK char ≈ 1-2 tokens, not 4 chars/token).
+    # image_url base64 is NOT counted at full length — see estimate above.
+    _IMAGE_URL_CHAR_EQUIVALENT = 4000  # ~2K tokens in char space
     if total_chars // 2 > settings.max_history_tokens:
         while history and total_chars // 2 > settings.max_history_tokens:
             removed = history.pop(0)
@@ -461,7 +469,7 @@ def _build_messages_history(messages: list[OpenAIMessage], *, keep_images: bool 
                 for b in rc:
                     if isinstance(b, dict):
                         if b.get("type") == "image_url":
-                            total_chars -= len(b.get("image_url", {}).get("url", ""))
+                            total_chars -= _IMAGE_URL_CHAR_EQUIVALENT
                         elif b.get("type") == "text":
                             total_chars -= len(b.get("text", ""))
             elif isinstance(rc, str):
