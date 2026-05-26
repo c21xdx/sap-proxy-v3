@@ -6,12 +6,12 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from curl_cffi import requests
+from pydantic import BaseModel
 
 from app.config import settings
 
@@ -40,8 +40,7 @@ class SAPCompletionError(SAPProxyError):
     pass
 
 
-@dataclass
-class CompletionRequest:
+class CompletionRequest(BaseModel):
     prompt_text: str
     model_name: str
     model_version: str
@@ -77,8 +76,7 @@ class CompletionRequest:
         )
 
 
-@dataclass
-class CurlLoginResult:
+class CurlLoginResult(BaseModel):
     final_url: str
     user_api_status: int
     user_api_content_type: str
@@ -86,16 +84,14 @@ class CurlLoginResult:
     csrf_token_present: bool
 
 
-@dataclass
-class CurlMetadataResult:
+class CurlMetadataResult(BaseModel):
     final_url: str
     metadata_status: int
     metadata_content_type: str
     model_count: int
 
 
-@dataclass
-class CurlCompletionResult:
+class CurlCompletionResult(BaseModel):
     final_url: str
     completion_status: int
     completion_content_type: str
@@ -103,8 +99,7 @@ class CurlCompletionResult:
     response_preview: str
 
 
-@dataclass
-class CompletionHTTPResult:
+class CompletionHTTPResult(BaseModel):
     final_url: str
     status_code: int
     content_type: str
@@ -113,17 +108,16 @@ class CompletionHTTPResult:
     stream_resp: Any | None = None  # curl_cffi raw response for true streaming
 
 
-@dataclass
-class CachedSession:
-    session: requests.Session
+class CachedSession(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
+    session: Any
     final_url: str
     created_at: float
     username: str
     base_url: str
 
 
-@dataclass
-class ModelAccessResult:
+class ModelAccessResult(BaseModel):
     allowed: bool
     checked_at: float
     status_code: int

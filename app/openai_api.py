@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-from app.curl_login import CompletionHTTPResult, CompletionRequest, SAPMetadataError, check_model_access_with_password_curl_cffi, get_cached_session_curl_cffi
+from app.curl_login import CompletionHTTPResult, CompletionRequest, SAPMetadataError, _supports_reasoning_effort, check_model_access_with_password_curl_cffi, get_cached_session_curl_cffi
 
 
 class OpenAIFunction(BaseModel):
@@ -319,23 +319,14 @@ def _repair_tool_adjacency(history: list[dict]) -> list[dict]:
     return repaired
 
 
-def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
-    """Build messages_history for SAP completionV2.
+def _find_turn_start(messages: list[OpenAIMessage]) -> int:
+    """Find the index where the current turn begins.
 
-    Includes all messages BEFORE the current turn.
-    Uses native OpenAI format: tool_calls in assistant messages,
-    role=tool with tool_call_id for tool results.
-
-    The current turn (including assistant(tool_calls) → tool_result chains)
-    goes in the template. History must NOT contain orphaned assistant(tool_calls)
-    whose tool_result is in the template, or SAP rejects with 400.
-
-    Truncates oldest history if it exceeds MAX_HISTORY_TURNS
-    or MAX_HISTORY_TOKENS limits.
+    Walks backwards from the last user/tool message to find the start
+    of the current turn. A turn includes: user message, any preceding
+    assistant(tool_calls), and tool results in a chain.
+    Returns 0 if the entire conversation is one turn.
     """
-    # Find the turn boundary — same logic as _build_template_messages.
-    # The current turn includes assistant(tool_calls) → tool_result chains,
-    # and the user message that started them. History = everything before.
     last_user_idx = -1
     for i, message in enumerate(messages):
         if message.role in ("user", "tool"):
@@ -359,6 +350,24 @@ def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
         else:
             # Boundary: system or assistant without tool_calls
             break
+    return turn_start
+
+
+def _build_messages_history(messages: list[OpenAIMessage]) -> list[dict]:
+    """Build messages_history for SAP completionV2.
+
+    Includes all messages BEFORE the current turn.
+    Uses native OpenAI format: tool_calls in assistant messages,
+    role=tool with tool_call_id for tool results.
+
+    The current turn (including assistant(tool_calls) → tool_result chains)
+    goes in the template. History must NOT contain orphaned assistant(tool_calls)
+    whose tool_result is in the template, or SAP rejects with 400.
+
+    Truncates oldest history if it exceeds MAX_HISTORY_TURNS
+    or MAX_HISTORY_TOKENS limits.
+    """
+    turn_start = _find_turn_start(messages)
 
     if turn_start <= 0:
         return []
@@ -509,32 +518,7 @@ def _build_messages_history_with_images(messages: list[OpenAIMessage]) -> list[d
 
     SAP accepts image_url in messages_history (verified).
     """
-    # Find the turn boundary — same logic as _build_template_messages.
-    # The current turn includes assistant(tool_calls) → tool_result chains,
-    # and the user message that started them. History = everything before.
-    last_user_idx = -1
-    for i, message in enumerate(messages):
-        if message.role in ("user", "tool"):
-            last_user_idx = i
-
-    turn_start = last_user_idx
-    while turn_start > 0:
-        prev = messages[turn_start - 1]
-        if prev.role == "tool":
-            # Parallel tool result — belongs to same turn
-            turn_start -= 1
-            continue
-        elif prev.role == "assistant" and prev.tool_calls:
-            # assistant(tool_calls) — its tool results are in this turn
-            turn_start -= 1
-            continue
-        elif prev.role == "user":
-            # User message that started this turn
-            turn_start -= 1
-            continue
-        else:
-            # Boundary: system or assistant without tool_calls
-            break
+    turn_start = _find_turn_start(messages)
 
     if turn_start <= 0:
         return []
@@ -658,36 +642,7 @@ def _build_template_messages(messages: list[OpenAIMessage], tools: list[OpenAITo
     current: list[dict] = []
 
     # Find the start of the current turn for template inclusion.
-    # The template must include the full turn: user → [assistant(tool_calls) → tool]*
-    # If we only start from the last user/tool message, we miss the
-    # assistant(tool_calls) that precedes a tool_result, causing
-    # SAP 400 "assistant with 'tool_calls' must be followed by tool messages".
-    last_user_idx = -1
-    for i, message in enumerate(messages):
-        if message.role in ("user", "tool"):
-            last_user_idx = i
-
-    # Walk backwards from last_user_idx to find the true turn start.
-    # A turn starts at a user message that is NOT preceded by an
-    # assistant(tool_calls) → [tool → assistant(tool_calls)]* chain.
-    turn_start = last_user_idx
-    while turn_start > 0:
-        prev = messages[turn_start - 1]
-        if prev.role == "tool":
-            # Parallel tool result — belongs to same turn
-            turn_start -= 1
-            continue
-        elif prev.role == "assistant" and prev.tool_calls:
-            # assistant(tool_calls) — its tool results are in this turn
-            turn_start -= 1
-            continue
-        elif prev.role == "user":
-            # User message that started this turn
-            turn_start -= 1
-            continue
-        else:
-            # Boundary: system or assistant without tool_calls
-            break
+    turn_start = _find_turn_start(messages)
 
     # If there's a system message, put it in template
     for message in messages:
@@ -1199,16 +1154,6 @@ def _parse_model_effort(model_name: str) -> tuple[str, str | None]:
     # Not a valid effort suffix — treat the whole string as model name
     # (e.g. 'some-model:other' where :other is not an effort level)
     return model_name, None
-
-
-def _supports_reasoning_effort(model_name: str) -> bool:
-    """Check if a model supports the reasoning_effort parameter on SAP."""
-    # GPT-5.x series and OpenAI o-series reasoning models
-    if model_name.startswith('gpt-5'):
-        return True
-    if model_name.startswith('o1') or model_name.startswith('o3') or model_name.startswith('o4'):
-        return True
-    return False
 
 
 def resolve_model(models: list[SupportedModel], requested: str) -> SupportedModel | None:
