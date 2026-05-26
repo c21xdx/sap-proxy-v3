@@ -15,6 +15,6 @@ COPY app/ app/
 ENV HOST=0.0.0.0
 ENV PORT=8011
 
-EXPOSE 8011
+EXPOSE ${PORT}
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8011"]
+CMD uvicorn app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8011}

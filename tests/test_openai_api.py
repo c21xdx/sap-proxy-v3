@@ -12,6 +12,7 @@ from app.openai_api import (
     resolve_model,
     _to_completion_request,
 )
+from app import openai_api
 
 
 METADATA = {
@@ -74,7 +75,8 @@ def test_build_prompt_text_preserves_roles() -> None:
     assert 'User: Add tests' in prompt
 
 
-def test_to_completion_request_uses_request_defaults() -> None:
+def test_to_completion_request_uses_request_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(openai_api.settings.completion, 'force_non_stream', False)
     req = OpenAIChatRequest(
         model='anthropic--claude-4.5-sonnet',
         messages=[
@@ -612,8 +614,9 @@ def test_multimodal_forces_stream_disabled():
     assert cr.stream_enabled is False, "stream should be force-disabled for multimodal"
 
 
-def test_text_mode_keeps_stream():
+def test_text_mode_keeps_stream(monkeypatch):
     """_to_completion_request should preserve stream=True for text-only requests."""
+    monkeypatch.setattr(openai_api.settings.completion, 'force_non_stream', False)
     from app.openai_api import OpenAIChatRequest, _to_completion_request
     req = OpenAIChatRequest(
         model='gpt-4o',

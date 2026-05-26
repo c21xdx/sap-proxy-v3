@@ -7,5 +7,6 @@ __pycache__/
 coverage/
 logs/
 *.log
+DEV-NOTES.md
 
 *.egg-info/

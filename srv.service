@@ -6,7 +6,9 @@ After=network.target
 Type=simple
 User=exedev
 WorkingDirectory=/home/exedev/107sapv3
-ExecStart=/home/exedev/107sapv3/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8013
+# Port 8013 chosen to coexist with v2 (port 8011).
+# config.py default is 8011; override via PORT env or --port flag.
+ExecStart=/home/exedev/107sapv3/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8013}
 Restart=always
 RestartSec=5
 
